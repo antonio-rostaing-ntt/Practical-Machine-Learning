@@ -1,0 +1,220 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "arostaing@outlook.com"
+output: html_document
+---
+
+---
+
+##Introduction
+This project will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly. The goal of the project is to predict the manner in which the participant do the exercise. This is the "classe" variable in the training set. Any of the other variables will be used to predict with.
+
+---  
+
+##Loading data
+The data for this project come from this [source](http://groupware.les.inf.puc-rio.br/har)
+
+```{r loadPackages, echo=FALSE, eval=TRUE, results='hide'}
+#Loading requiered packages
+library(plyr, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(lattice, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(ggplot2, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(caret, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(foreach, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(iterators, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(parallel, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(doMC, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(rpart, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(randomForest, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+library(gbm, quietly = TRUE, verbose =FALSE, warn.conflicts = FALSE)
+```
+
+```{r loadData1, echo=FALSE, eval=TRUE, results='hide'}
+# Set working directory
+setwd("~/Documents/Github/PracticalMachineLearning")
+```
+
+```{r loadData2, echo=TRUE, eval=TRUE, results='hide'}
+# Read csv (working directory must be set previously)
+training <- read.csv (file="pml-training.csv", as.is=TRUE, na.strings=c('#DIV/0!', 'NA', '') )
+test <- read.csv (file="pml-testing.csv", as.is=TRUE, na.strings=c('#DIV/0!', 'NA', '') )
+```
+
+---  
+
+##Data Pre-Procesing
+It's necessary to do some cleaning process.
+
+### Near zero variance predictors.
+- Avoid using predictors that have unique value.
+- Avoid using near zero variance predictors.
+
+```{r cleaningDataNZV, echo=TRUE, eval=TRUE, cache=TRUE}
+library(caret)
+nearzerovar <- nearZeroVar (training, saveMetrics = TRUE)
+
+# Drop columns that have the same value in all observation
+noinfo.Cols <- rownames (nearzerovar[nearzerovar$zeroVar == TRUE,])
+noinfo.Cols
+training <- training[,!(names(training) %in% noinfo.Cols)]
+
+# Drop near zero variance colums' predictor
+nearzerovar.Cols <- rownames (nearzerovar[nearzerovar$nzv == TRUE,])
+nearzerovar.Cols
+training <- training[,!(names(training) %in% nearzerovar.Cols)]
+```
+
+### Missing data
+The first look at the data shows that there are some columns with presence of NA values.
+All columns dropped in the previous step belongs to these class of columns.
+A closer look to these columns shows that when a columns has NA values, more than 97% of the values are NA. In other words, less than 3% of observation has a computable value for that predictor, so we exclude the associate predictor from the model.
+```{r cleaningDataNA, echo=TRUE, eval=TRUE}
+#Drop columns with high percent of NA values (> 97%)
+naPercent <- apply(training, 2, function (x) length(which(is.na (x))) / length(x))
+min(naPercent[naPercent>0])
+naPercent.Cols <- colnames(training) [naPercent > 0.97]
+naPercent.Cols
+training <- training[,!(names(training) %in% naPercent.Cols)]
+```
+
+### Drop others unuseful predictors.
+- Avoid using other predictors in the models like user_name, timestamps, etc.
+```{r cleaningDataUnuseful, echo=TRUE, eval=TRUE}
+#str(training, list.len = 200)
+unuseful.Cols <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "num_window")
+training <- training[,!(names(training) %in% unuseful.Cols)]
+```
+
+### Data transformation
+After the cleaning process we have selected 52 predictor, all of them of type numeric.  
+It is not necessary any type conversion, except the outcome var.
+```{r cleaningDataTransformation, echo=TRUE, eval=TRUE}
+training$classe <- as.factor(training$classe)
+```
+
+---  
+
+## Data slicing
+For prediction study design:  
+
+- 60 % training
+- 40 % testing
+
+```{r dataSlicing, echo=TRUE, eval=TRUE}
+library(caret)
+inTrain <- createDataPartition (y=training$classe, p=0.60, list=FALSE)
+model.training <- training[inTrain,]
+model.testing <- training[-inTrain,]
+```
+
+---  
+
+## Machine learning algorithm
+I´ll build 3 models using 3 differents algorithm over training data and I'll compare the results over testing data.  
+The models will be created with the `train` function of `caret` package, using the default 25 resamples with bootstrapped resampling.  
+The model with best out sample error will be choose to predict.
+
+- Classification Tree
+- Random Forest
+- Boosting with trees
+
+```{r modelParallel, echo=TRUE, eval=TRUE}
+#Parallel processing activation
+library(doMC)
+registerDoMC(cores = 4)
+```
+
+### Model 1: Classification Tree
+
+```{r modelRPART, echo=TRUE, eval=TRUE, cache=TRUE}
+# Note that the number levels for each tuning parameters as been increased 
+library(rpart)
+set.seed(321)
+fit1 <- train (classe ~ ., method="rpart", data=model.training, tuneLength=50)
+prediction1 <- predict(fit1, newdata=model.testing)
+outOfSampleError1 <- sum(prediction1 == model.testing$classe)/length(prediction1)
+confusionMatrix(prediction1, model.testing$classe)
+```
+
+### Model 2: Random Forest
+```{r modelRF, echo=TRUE, eval=TRUE, cache=TRUE}
+library(randomForest)
+set.seed(321)
+fit2 <- train (classe ~ ., method="rf", data=model.training)
+prediction2 <- predict(fit2, newdata=model.testing)
+outOfSampleError2 <- sum(prediction2 == model.testing$classe)/length(prediction2)
+confusionMatrix(prediction2, model.testing$classe)
+```
+
+### Model 3: Boosting with trees
+```{r modelGBM, echo=TRUE, eval=TRUE, cache=TRUE}
+library(gbm)
+set.seed(321)
+fit3 <- train (classe ~ ., method="gbm", data=model.training, verbose=FALSE)
+prediction3 <- predict(fit3, newdata=model.testing)
+outOfSampleError3 <- sum(prediction3 == model.testing$classe)/length(prediction3)
+confusionMatrix(prediction3, model.testing$classe)
+```
+
+### Comparing Models
+**Out of Sample Error Resume**
+
+Model                  | Out of Sample Error
+---------------------- | -------------------
+Classification Tree    | `r round(1 - outOfSampleError1,3)`
+Random Forest          | `r round(1 - outOfSampleError2,3)`
+Boosting with trees    | `r round(1 - outOfSampleError3,3)`
+
+The best fit corresponds to the 'Random Forest' model.
+
+```{r comparingModels, echo=TRUE, eval=TRUE}
+cvValues <- resamples(list(RPART = fit1, RF = fit2, GBM = fit3))
+summary(cvValues)
+```
+
+However, the model 'Boosting with tress' produces good results, with the cost of processing this model significantly lower.
+```{r comparingTime, echo=TRUE, eval=TRUE}
+#Time consuption
+str(cvValues$timings)
+```
+
+```{r varImportance, echo=FALSE, eval=FALSE}
+#Var importance
+par(mfrow=c(1,3))
+plot(varImp(fit1), main="Classification Tree")
+plot(varImp(fit2), main="Random Forest")
+plot(varImp(fit3), main="Boosting with trees")
+```
+
+--- 
+
+#New Predictions
+Lets predict de outcome of test data using the 3 created models.
+```{r prediction, echo=TRUE, eval=TRUE}
+predictionTest1 <- predict(fit1, newdata=test)
+predictionTest2 <- predict(fit2, newdata=test)
+predictionTest3 <- predict(fit3, newdata=test)
+table(predictionTest1, predictionTest2)
+table(predictionTest2, predictionTest3)
+```
+Previous table shows that fit2 and fit3 produce the same results for this test data set.
+
+```{r prediction`Write, echo=FALSE, eval=TRUE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(predictionTest2)
+```
+
+---
+
+# System & Version Info
+```{r version, echo=FALSE, eval=TRUE}
+#Version Info
+R.version
+```
+
